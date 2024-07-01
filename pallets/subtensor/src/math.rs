@@ -899,7 +899,7 @@ pub fn weighted_median(
             return pivot;
         }
     }
-    return I32F32::from_num(0);
+    I32F32::from_num(0)
 }
 
 /// Column-wise weighted median, e.g. stake-weighted median scores per server (column) over all validators (rows).
