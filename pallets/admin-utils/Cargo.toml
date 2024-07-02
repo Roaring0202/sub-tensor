@@ -37,6 +37,7 @@ sp-io = { workspace = true }
 sp-tracing = { workspace = true }
 sp-consensus-aura = { workspace = true }
 pallet-balances = { workspace = true, features = ["std"] }
+substrate-fixed = { git = 'https://github.com/encointer/substrate-fixed.git', tag = "v0.5.9" }
 
 
 [features]
