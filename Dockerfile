@@ -1,64 +1,341 @@
+name: Check Rust
 
-ARG BASE_IMAGE=ubuntu:20.04
+concurrency:
+  group: check-rust-${{ github.ref }}
+  cancel-in-progress: true
 
-FROM $BASE_IMAGE as builder
-SHELL ["/bin/bash", "-c"]
+on:
+  push:
+    branches: [main, devnet-ready, devnet, testnet, finney]
 
-# This is being set so that no interactive components are allowed when updating.
-ARG DEBIAN_FRONTEND=noninteractive
+  pull_request:
 
-LABEL ai.opentensor.image.authors="operations@opentensor.ai" \
-  ai.opentensor.image.vendor="Opentensor Foundation" \
-  ai.opentensor.image.title="opentensor/subtensor" \
-  ai.opentensor.image.description="Opentensor Subtensor Blockchain" \
-  ai.opentensor.image.revision="${VCS_REF}" \
-  ai.opentensor.image.created="${BUILD_DATE}" \
-  ai.opentensor.image.documentation="https://docs.bittensor.com"
+  ## Allow running workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Output more information when triggered manually"
+        required: false
+        default: ""
 
-# show backtraces
-ENV RUST_BACKTRACE 1
+env:
+  CARGO_TERM_COLOR: always
+  VERBOSE: ${{ github.events.input.verbose }}
 
-# Necessary libraries for Rust execution
-RUN apt-get update && \
-  apt-get install -y curl build-essential protobuf-compiler clang git && \
-  rm -rf /var/lib/apt/lists/*
+jobs:
+  # runs cargo fmt
+  cargo-fmt:
+    name: cargo fmt
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - nightly-2024-03-05
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v4
 
-# Install cargo and Rust
-RUN set -o pipefail && curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential
 
-RUN mkdir -p /subtensor && \
-  mkdir /subtensor/scripts
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt
+          profile: minimal
 
-# Scripts
-COPY ./scripts/init.sh /subtensor/scripts/
+      - name: cargo fmt
+        run: cargo fmt --check --all
 
-# Capture dependencies
-COPY Cargo.lock Cargo.toml /subtensor/
+  cargo-clippy-default-features:
+    name: cargo clippy
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - stable
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v4
 
-# Specs
-COPY ./snapshot.json /subtensor/snapshot.json
-COPY ./raw_spec.json /subtensor/raw_spec.json
-COPY ./raw_testspec.json /subtensor/raw_testspec.json
+      - name: Install dependencies
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y clang curl libssl-dev llvm libudev-dev protobuf-compiler
 
-# Copy our sources
-COPY ./node /subtensor/node
-COPY ./pallets /subtensor/pallets
-COPY ./runtime /subtensor/runtime
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt, clippy
+          profile: minimal
 
-# Update to nightly toolchain
-COPY rust-toolchain.toml /subtensor/
-RUN /subtensor/scripts/init.sh
+      - name: Utilize Shared Rust Cache
+        uses: Swatinem/rust-cache@v2.2.1
+        with:
+          key: ${{ matrix.os }}-${{ env.RUST_BIN_DIR }}
 
-# Cargo build
-WORKDIR /subtensor
-RUN cargo build --profile production --features runtime-benchmarks --locked
-EXPOSE 30333 9933 9944
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
+  cargo-clippy-all-features:
+    name: cargo clippy --all-features
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - stable
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v2
 
-FROM $BASE_IMAGE AS subtensor
+      - name: Install dependencies
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y clang curl libssl-dev llvm libudev-dev protobuf-compiler
 
-COPY --from=builder /subtensor/snapshot.json /
-COPY --from=builder /subtensor/raw_spec.json /
-COPY --from=builder /subtensor/raw_testspec.json /
-COPY --from=builder /subtensor/target/production/node-subtensor /usr/local/bin
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt, clippy
+          profile: minimal
+
+      - name: Utilize Shared Rust Cache
+        uses: Swatinem/rust-cache@v2.2.1
+        with:
+          key: ${{ matrix.os }}-${{ env.RUST_BIN_DIR }}
+
+      - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+  # runs cargo test --workspace
+  cargo-test:
+    name: cargo test
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - stable
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y clang curl libssl-dev llvm libudev-dev protobuf-compiler
+
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt, clippy
+          profile: minimal
+
+      - name: Utilize Rust shared cached
+        uses: Swatinem/rust-cache@v2.2.1
+        with:
+          key: ${{ matrix.os }}-${{ env.RUST_BIN_DIR }}
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  # runs cargo test --workspace --features=runtime-benchmarks
+  cargo-test-benchmarks:
+    name: cargo test w/benchmarks
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - stable
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y clang curl libssl-dev llvm libudev-dev protobuf-compiler
+
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt, clippy
+          profile: minimal
+
+      - name: Utilize Rust shared cached
+        uses: Swatinem/rust-cache@v2.2.1
+        with:
+          key: ${{ matrix.os }}-${{ env.RUST_BIN_DIR }}
+
+      - name: cargo test --workspace --features=runtime-benchmarks
+        run: cargo test --workspace --features=runtime-benchmarks
+
+  # ensures cargo fix has no trivial changes that can be applied
+  cargo-fix:
+    name: cargo fix
+    runs-on: SubtensorCI
+    strategy:
+      matrix:
+        rust-branch:
+          - stable
+        rust-target:
+          - x86_64-unknown-linux-gnu
+          # - x86_64-apple-darwin
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        include:
+          - os: ubuntu-latest
+          # - os: macos-latest
+    env:
+      RELEASE_NAME: development
+      # RUSTFLAGS: -A warnings
+      RUSTV: ${{ matrix.rust-branch }}
+      RUST_BACKTRACE: full
+      RUST_BIN_DIR: target/${{ matrix.rust-target }}
+      SKIP_WASM_BUILD: 1
+      TARGET: ${{ matrix.rust-target }}
+    steps:
+      - name: Check-out repository under $GITHUB_WORKSPACE
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y clang curl libssl-dev llvm libudev-dev protobuf-compiler
+
+      - name: Install Rust ${{ matrix.rust-branch }}
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: ${{ matrix.rust-branch }}
+          components: rustfmt, clippy
+          profile: minimal
+
+      - name: Utilize Rust shared cached
+        uses: Swatinem/rust-cache@v2.2.1
+        with:
+          key: ${{ matrix.os }}-${{ env.RUST_BIN_DIR }}
+
+      - name: cargo fix --workspace
+        run: |
+          # Run cargo fix on the project
+          cargo fix --workspace
+
+          # Check for local git changes
+          if ! git diff --exit-code; then
+              echo "There are local changes after running 'cargo fix --workspace' ❌"
+              exit 1
+          else
+              echo "No changes detected after running 'cargo fix --workspace' ✅"
+          fi
+
+  check-feature-propagation:
+    name: zepter run check
+    runs-on: SubtensorCI
+
+    steps:
+      - name: Install stable Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - name: Install Zepter
+        run: cargo install --locked -q zepter && zepter --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Dont clone historic commits.
+
+      - name: Check features
+        run: zepter run check
+
